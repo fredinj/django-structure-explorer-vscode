@@ -383,29 +383,34 @@ export class DjangoProjectAnalyzer {
         }
         // Continuación de un campo de múltiples líneas
         else if (currentFieldName && currentFieldType && parenthesesCount > 0) {
-          // Contar paréntesis en esta línea
-          const openParens = (line.match(/\(/g) || []).length;
-          const closeParens = (line.match(/\)/g) || []).length;
-          parenthesesCount += openParens - closeParens;
-          
-          // Si los paréntesis están equilibrados, el campo está completo
-          if (parenthesesCount === 0) {
-            currentModel.fields!.push({
-              name: currentFieldName,
-              fieldType: currentFieldType,
-              lineNumber: currentFieldLine
-            });
-            currentFieldName = '';
-            currentFieldType = '';
+          // Ignorar líneas que son claramente parámetros de campo
+          const isParameter = line.trim().match(/^\w+\s*=/);
+          if (!isParameter) {
+            // Contar paréntesis en esta línea
+            const openParens = (line.match(/\(/g) || []).length;
+            const closeParens = (line.match(/\)/g) || []).length;
+            parenthesesCount += openParens - closeParens;
+            
+            // Si los paréntesis están equilibrados, el campo está completo
+            if (parenthesesCount === 0) {
+              currentModel.fields!.push({
+                name: currentFieldName,
+                fieldType: currentFieldType,
+                lineNumber: currentFieldLine
+              });
+              currentFieldName = '';
+              currentFieldType = '';
+              fieldStartIndentation = 0;
+            }
           }
         }
-        // Nueva línea con la misma indentación que el nivel de campo, pero no es continuación
+        // Nueva línea con la misma indentación que el nivel de campo
         else if (indentation === fieldStartIndentation && !line.trim().startsWith('#')) {
-          // Verificar si es un nuevo campo con cualquier formato no capturado anteriormente
-          const otherFieldRegex = /^\s+(\w+)\s*=\s*(\w+)(?:\.(\w+))?\s*\(?(.*)/;
-          const otherFieldMatch = line.match(otherFieldRegex);
+          // Solo procesar líneas que parezcan definiciones de campo
+          const fieldDefRegex = /^\s*(\w+)\s*=\s*(models\.|\w+\.)?([A-Z]\w+)\s*\(?/;
+          const fieldMatch = line.match(fieldDefRegex);
           
-          if (otherFieldMatch) {
+          if (fieldMatch && !line.trim().match(/^\w+\s*=\s*['"]/) && !line.trim().match(/^\w+\s*=\s*\d+/)) {
             // Si estábamos procesando un campo anterior, añadirlo al modelo
             if (currentFieldName && currentFieldType) {
               currentModel.fields!.push({
@@ -416,17 +421,17 @@ export class DjangoProjectAnalyzer {
             }
             
             // Iniciar el seguimiento de un nuevo campo
-            currentFieldName = otherFieldMatch[1];
-            // El tipo de campo puede ser con o sin prefijo
-            currentFieldType = otherFieldMatch[3] || otherFieldMatch[2];
+            currentFieldName = fieldMatch[1];
+            currentFieldType = fieldMatch[3];
             currentFieldLine = i;
+            fieldStartIndentation = indentation;
             
-            // Contar paréntesis abiertos y cerrados en esta línea
-            const openParens = (otherFieldMatch[4].match(/\(/g) || []).length;
-            const closeParens = (otherFieldMatch[4].match(/\)/g) || []).length;
+            // Contar paréntesis
+            const openParens = (line.match(/\(/g) || []).length;
+            const closeParens = (line.match(/\)/g) || []).length;
             parenthesesCount = openParens - closeParens;
             
-            // Si los paréntesis están equilibrados, el campo está completo en esta línea
+            // Si no hay paréntesis abiertos, el campo está completo
             if (parenthesesCount === 0) {
               currentModel.fields!.push({
                 name: currentFieldName,
@@ -435,6 +440,7 @@ export class DjangoProjectAnalyzer {
               });
               currentFieldName = '';
               currentFieldType = '';
+              fieldStartIndentation = 0;
             }
           }
         }
