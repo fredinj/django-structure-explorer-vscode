@@ -136,8 +136,9 @@ export class DjangoProjectAnalyzer {
         }
       }
       
-      // Almacenar las clases base importadas que podrían ser modelos
+      // Almacenar las clases base importadas y definidas localmente que podrían ser modelos
       const importedBaseClasses: {[key: string]: string} = {};
+      const localModelClasses = new Set<string>();
       
       // Buscar importaciones de clases base personalizadas
       for (let i = 0; i < 30 && i < lines.length; i++) {
@@ -161,7 +162,7 @@ export class DjangoProjectAnalyzer {
       const modelRegex = /^class\s+(\w+)\s*\((.*?)\):/;
       
       // Función para verificar si una clase base es un modelo Django
-      const isDjangoModel = (baseClass: string): boolean => {
+      const isDjangoModel = (baseClass: string, definedModels: Set<string>): boolean => {
         // Casos directos
         if (baseClass === 'models.Model' || baseClass === 'Model') {
           return true;
@@ -169,6 +170,13 @@ export class DjangoProjectAnalyzer {
         
         // Verificar clases importadas
         const cleanBase = baseClass.trim();
+        
+        // Verificar si es una clase local que ya sabemos que es un modelo
+        if (definedModels.has(cleanBase)) {
+          console.log(`Detectada herencia de clase local: ${cleanBase}`);
+          return true;
+        }
+        
         if (importedBaseClasses[cleanBase]) {
           const module = importedBaseClasses[cleanBase];
           return module.includes('django.db.models') || 
@@ -178,6 +186,23 @@ export class DjangoProjectAnalyzer {
         
         return false;
       };
+      
+      // Primera pasada: identificar todas las clases que heredan directamente de models.Model
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        const modelMatch = line.match(modelRegex);
+        
+        if (modelMatch) {
+          const className = modelMatch[1];
+          const baseClasses = modelMatch[2].split(',').map(base => base.trim());
+          
+          // Si hereda directamente de models.Model, añadirlo a las clases locales
+          if (baseClasses.some(base => base === 'models.Model' || base === 'Model')) {
+            localModelClasses.add(className);
+            console.log(`Añadida clase base local: ${className}`);
+          }
+        }
+      }
       // Expresión regular para encontrar el inicio de la clase Meta
       const metaClassRegex = /^\s+class\s+Meta\s*:/;
       // Expresión regular para detectar decoradores @property
@@ -210,9 +235,13 @@ export class DjangoProjectAnalyzer {
         if (modelMatch) {
           // Analizar las clases base
           const baseClasses = modelMatch[2].split(',').map(base => base.trim());
-          const isModelClass = baseClasses.some(base => isDjangoModel(base));
+          const isModelClass = baseClasses.some(base => isDjangoModel(base, localModelClasses));
           
           if (isModelClass) {
+            // Si es un modelo, añadirlo a las clases locales para futuras referencias
+            localModelClasses.add(modelMatch[1]);
+            console.log(`Añadido nuevo modelo: ${modelMatch[1]}`);
+
             // Guardar el modelo anterior si existe
             if (currentModel) {
               models.push(currentModel);
