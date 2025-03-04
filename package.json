@@ -2,7 +2,7 @@
   "name": "django-structure-explorer",
   "displayName": "Django Structure Explorer",
   "description": "Explorador de estructura de proyectos Django al estilo PyCharm",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "publisher": "Dos2Locos",
   "repository": {
     "type": "git",
