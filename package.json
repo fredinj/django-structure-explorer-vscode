@@ -40,6 +40,13 @@
             "Keep items in the order they appear in code"
           ],
           "description": "How to sort items in the tree view"
+        },
+        "djangoStructureExplorer.searchDepth": {
+          "type": "number",
+          "default": 1,
+          "minimum": 1,
+          "maximum": 5,
+          "description": "Maximum depth to search for manage.py files in subdirectories (1 = root only)"
         }
       }
     },
