@@ -80,6 +80,20 @@ export class DjangoStructureProvider implements vscode.TreeDataProvider<DjangoTr
     return this.configCache[key] as T;
   }
 
+  private debugLog(message: string, ...args: any[]): void {
+    const enableDebugLogging = this.getCachedConfig('enableDebugLogging', false);
+    if (enableDebugLogging) {
+      console.log(`[Django Structure Explorer] ${message}`, ...args);
+    }
+  }
+
+  private debugWarn(message: string, ...args: any[]): void {
+    const enableDebugLogging = this.getCachedConfig('enableDebugLogging', false);
+    if (enableDebugLogging) {
+      console.warn(`[Django Structure Explorer] ${message}`, ...args);
+    }
+  }
+
   getTreeItem(element: DjangoTreeItem): vscode.TreeItem {
     return element;
   }
@@ -134,9 +148,9 @@ export class DjangoStructureProvider implements vscode.TreeDataProvider<DjangoTr
 
       return items;
     } else if (element.contextValue === 'apps') {
-      // Applications group - show all apps
+      // Applications group - show all apps (optimize with Promise.all)
       const apps = await this.analyzer.findDjangoApps(this.projectRoot);
-      return Promise.all(apps.map(app => {
+      const appItems = apps.map(app => {
         const appName = path.basename(app);
         const appItem = new DjangoTreeItem(
           appName,
@@ -147,7 +161,8 @@ export class DjangoStructureProvider implements vscode.TreeDataProvider<DjangoTr
         );
         appItem.iconPath = new vscode.ThemeIcon('package');
         return appItem;
-      }));
+      });
+      return appItems;
     } else if (element.contextValue === 'app') {
       // Application level - show models, views, etc.
       return this.getAppStructure(element.resourceUri!.fsPath);
@@ -198,9 +213,15 @@ export class DjangoStructureProvider implements vscode.TreeDataProvider<DjangoTr
       return this.fileExistsCache.get(filePath)!;
     }
     
-    const exists = fs.existsSync(filePath);
-    this.fileExistsCache.set(filePath, exists);
-    return exists;
+    try {
+      const exists = fs.existsSync(filePath);
+      this.fileExistsCache.set(filePath, exists);
+      return exists;
+    } catch (error) {
+      console.warn(`Failed to check file existence for ${filePath}:`, error);
+      this.fileExistsCache.set(filePath, false);
+      return false;
+    }
   }
 
   private cachedReadDir(dirPath: string): string[] | null {
@@ -288,12 +309,12 @@ private searchForManagePy(directory: string, depth: number): string | undefined 
           }
         });
         
-        console.log(`Django Structure Explorer: Loaded ${this.gitignorePatterns.length} gitignore patterns from ${gitignorePath}`);
+        this.debugLog(`Loaded ${this.gitignorePatterns.length} gitignore patterns from ${gitignorePath}`);
       } catch (error) {
-        console.warn('Django Structure Explorer: Failed to read .gitignore:', error);
+        this.debugWarn('Failed to read .gitignore:', error);
       }
     } else {
-      console.log('Django Structure Explorer: No .gitignore file found, using default ignore patterns');
+      this.debugLog('No .gitignore file found, using default ignore patterns');
     }
 
     // Add basic patterns that should always be ignored for performance
@@ -426,12 +447,12 @@ private searchForManagePy(directory: string, depth: number): string | undefined 
 
   private async getModels(modelsPath: string): Promise<DjangoTreeItem[]> {
     const models = await this.analyzer.extractModels(modelsPath);
-    console.log('Models found:', models.length);
+    this.debugLog('Models found:', models.length);
     
     const items = models.map(model => {
-      console.log(`Model: ${model.name}, Fields: ${model.fields?.length || 0}`);
-      if (model.fields) {
-        console.log('Model fields:', JSON.stringify(model.fields));
+      this.debugLog(`Model: ${model.name}, Fields: ${model.fields?.length || 0}`);
+      if (model.fields && this.getCachedConfig('enableDebugLogging', false)) {
+        this.debugLog('Model fields:', JSON.stringify(model.fields));
       }
       
       // Create a copy of fields to avoid reference issues

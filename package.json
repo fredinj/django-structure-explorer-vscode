@@ -15,7 +15,6 @@
     "Other"
   ],
   "activationEvents": [
-    "onLanguage:python",
     "workspaceContains:manage.py",
     "onView:djangoStructureExplorer",
     "onView:django-explorer"
@@ -47,6 +46,11 @@
           "minimum": 1,
           "maximum": 5,
           "description": "Maximum depth to search for manage.py files in subdirectories (1 = root only)"
+        },
+        "djangoStructureExplorer.enableDebugLogging": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable debug logging to VS Code developer console"
         }
       }
     },
@@ -55,7 +59,7 @@
         {
           "id": "django-explorer",
           "title": "Django Explorer",
-          "icon": "resources/django.svg"
+          "icon": "resources/django.png"
         }
       ]
     },
