@@ -16,6 +16,11 @@ export class DjangoOutlineProvider implements vscode.DocumentSymbolProvider {
     const symbols: vscode.DocumentSymbol[] = [];
     const fileName = path.basename(document.fileName);
 
+    // Check for cancellation early
+    if (token.isCancellationRequested) {
+      return symbols;
+    }
+
     // Solo procesar archivos Python
     if (!document.fileName.endsWith('.py')) {
       return [];
@@ -24,8 +29,16 @@ export class DjangoOutlineProvider implements vscode.DocumentSymbolProvider {
     try {
       // Analizar el archivo según su tipo
       if (fileName === 'models.py') {
+        if (token.isCancellationRequested) {
+          return symbols;
+        }
+        
         const models = await this.analyzer.extractModels(document.fileName);
         for (const model of models) {
+          if (token.isCancellationRequested) {
+            return symbols;
+          }
+          
           const modelSymbol = new vscode.DocumentSymbol(
             model.name,
             'class',
@@ -37,6 +50,10 @@ export class DjangoOutlineProvider implements vscode.DocumentSymbolProvider {
           // Añadir campos como hijos del modelo
           if (model.fields) {
             for (const field of model.fields) {
+              if (token.isCancellationRequested) {
+                return symbols;
+              }
+              
               const fieldSymbol = new vscode.DocumentSymbol(
                 field.name,
                 field.fieldType || '',

@@ -10,6 +10,7 @@ export function activate(context: vscode.ExtensionContext) {
   const djangoOutlineProvider = new DjangoOutlineProvider();
 
   context.subscriptions.push(
+    djangoStructureProvider, // Add provider to subscriptions for proper disposal
     vscode.window.registerTreeDataProvider('djangoStructureExplorer', djangoStructureProvider),
     vscode.languages.registerDocumentSymbolProvider({ language: 'python', pattern: '**/*.py' }, djangoOutlineProvider),
     vscode.commands.registerCommand('djangoStructureExplorer.refresh', () => djangoStructureProvider.refresh()),
@@ -18,12 +19,16 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showErrorMessage(`El archivo ${filePath} no existe.`);
         return;
       }
-      const doc = await vscode.workspace.openTextDocument(filePath);
-      const editor = await vscode.window.showTextDocument(doc);
-      if (lineNumber !== undefined) {
-        const position = new vscode.Position(lineNumber, 0);
-        editor.selection = new vscode.Selection(position, position);
-        editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+      try {
+        const doc = await vscode.workspace.openTextDocument(filePath);
+        const editor = await vscode.window.showTextDocument(doc);
+        if (lineNumber !== undefined) {
+          const position = new vscode.Position(lineNumber, 0);
+          editor.selection = new vscode.Selection(position, position);
+          editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+        }
+      } catch (error) {
+        vscode.window.showErrorMessage(`Error opening file: ${error}`);
       }
     })
   );

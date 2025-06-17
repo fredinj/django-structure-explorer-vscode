@@ -45,6 +45,17 @@ export interface DjangoSetting {
 }
 
 export class DjangoProjectAnalyzer {
+  private modelCache: Map<string, DjangoModel[]> = new Map();
+  private cacheExpiry: Map<string, number> = new Map();
+  private readonly cacheTtl = 30000; // 30 seconds
+  
+  private debugLog(message: string, ...args: any[]): void {
+    const config = vscode.workspace.getConfiguration('djangoStructureExplorer');
+    const enableDebugLogging = config.get('enableDebugLogging', false);
+    if (enableDebugLogging) {
+      console.log(`[Django Analyzer] ${message}`, ...args);
+    }
+  }
   
   /**
    * Busca todos los archivos settings.py en el proyecto
@@ -106,6 +117,16 @@ export class DjangoProjectAnalyzer {
    * Extrae los modelos de un archivo models.py
    */
   async extractModels(modelsPath: string): Promise<DjangoModel[]> {
+    // Check cache first
+    const cacheKey = modelsPath;
+    const cachedTime = this.cacheExpiry.get(cacheKey);
+    if (cachedTime && Date.now() - cachedTime < this.cacheTtl) {
+      const cached = this.modelCache.get(cacheKey);
+      if (cached) {
+        return cached;
+      }
+    }
+
     const models: DjangoModel[] = [];
     
     try {
@@ -124,7 +145,7 @@ export class DjangoProjectAnalyzer {
         const aliasMatch = line.match(/^from\s+django\.db\s+import\s+models\s+as\s+(\w+)/);
         if (aliasMatch) {
           importAliases['models'] = aliasMatch[1];
-          console.log(`Detectado alias para models: ${aliasMatch[1]}`);
+          this.debugLog(`Detectado alias para models: ${aliasMatch[1]}`);
         }
         
         // Detectar importaciones directas de tipos de campo
@@ -132,7 +153,7 @@ export class DjangoProjectAnalyzer {
         if (directImportMatch) {
           const imports = directImportMatch[1].split(',').map(i => i.trim());
           directImports.push(...imports);
-          console.log(`Detectadas importaciones directas: ${imports.join(', ')}`);
+          this.debugLog(`Detectadas importaciones directas: ${imports.join(', ')}`);
         }
       }
       
@@ -151,7 +172,7 @@ export class DjangoProjectAnalyzer {
           
           imports.forEach(importName => {
             importedBaseClasses[importName] = module;
-            console.log(`Detectada posible clase base: ${importName} desde ${module}`);
+            this.debugLog(`Detectada posible clase base: ${importName} desde ${module}`);
           });
         }
       }
@@ -350,7 +371,7 @@ export class DjangoProjectAnalyzer {
         
         // Añadir patrón para alias: name = m.CharField(...)
         if (importAliases['models']) {
-          fieldRegexPatterns.push(`^\\s+(\\w+)\\s*=\\s*${importAliases['models']}\\.(\\w+)\\s*\\(?(.*)`)
+          fieldRegexPatterns.push(`^\\s+(\\w+)\\s*=\\s*${importAliases['models']}\\.(\\w+)\\s*\\(?(.*)`);
         }
         
         // Añadir patrón para importaciones directas: name = CharField(...)
@@ -431,7 +452,7 @@ export class DjangoProjectAnalyzer {
             currentFieldType = '';
           }
         }
-        // Nueva línea con la misma indentación que el nivel de campo, pero no es continuación
+        // Nueva línea with la misma indentación que el nivel de campo, pero no es continuación
         else if (indentation === fieldStartIndentation && !line.trim().startsWith('#')) {
           // Verificar si es un nuevo campo con cualquier formato no capturado anteriormente
           const otherFieldRegex = /^\s+(\w+)\s*=\s*(\w+)(?:\.(\w+))?\s*\(?(.*)/;
@@ -486,10 +507,14 @@ export class DjangoProjectAnalyzer {
         models.push(currentModel);
       }
       
-      console.log(`Modelos extraídos: ${models.length}`);
+      this.debugLog(`Modelos extraídos: ${models.length}`);
       for (const model of models) {
-        console.log(`Modelo: ${model.name}, Campos: ${model.fields?.length || 0}`);
+        this.debugLog(`Modelo: ${model.name}, Campos: ${model.fields?.length || 0}`);
       }
+
+      // Cache the results
+      this.modelCache.set(cacheKey, models);
+      this.cacheExpiry.set(cacheKey, Date.now());
       
     } catch (error) {
       console.error(`Error al analizar modelos: ${error}`);

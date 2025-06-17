@@ -76,7 +76,34 @@ Examine your URL patterns with details about:
 
 ## Extension Settings
 
-This extension works out of the box with no additional configuration required.
+This extension contributes the following settings:
+
+- `djangoStructureExplorer.searchDepth`: Maximum depth to search for `manage.py` files in subdirectories (default: 1, range: 1-5). This controls how deep the extension searches for Django projects within your workspace.
+- `djangoStructureExplorer.sortOrder`: How to sort items in the tree view (alphabetical, alphabeticalDesc, or codeOrder)
+
+### Smart Directory Filtering
+
+The extension automatically respects your `.gitignore` file when searching for Django projects. This means:
+
+- Directories listed in `.gitignore` will be skipped during the search for `manage.py`
+- This significantly improves performance by avoiding large directories like `node_modules`, virtual environments, and build artifacts
+- If no `.gitignore` is found, the extension uses sensible defaults (`.git`, `.vscode`, `__pycache__`)
+
+### Configuration Examples
+
+To search up to 3 levels deep for Django projects:
+```json
+{
+  "djangoStructureExplorer.searchDepth": 3
+}
+```
+
+To sort items in reverse alphabetical order:
+```json
+{
+  "djangoStructureExplorer.sortOrder": "alphabeticalDesc"
+}
+```
 
 ## Known Issues
 

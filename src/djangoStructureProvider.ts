@@ -10,15 +10,88 @@ export class DjangoStructureProvider implements vscode.TreeDataProvider<DjangoTr
   
   private analyzer: DjangoProjectAnalyzer;
   private projectRoot: string | undefined;
+  private gitignorePatterns: string[] = [];
+  private compiledGitignorePatterns: Map<string, RegExp> = new Map();
+  private configCache: { [key: string]: any } = {};
+  private fileExistsCache: Map<string, boolean> = new Map();
+  private directoryListCache: Map<string, string[]> = new Map();
+  private lastCacheTime: number = 0;
+  private readonly cacheTtl = 30000; // 30 seconds
+  private fileWatcher: vscode.FileSystemWatcher | undefined;
 
   constructor() {
     this.analyzer = new DjangoProjectAnalyzer();
     this.projectRoot = this.findDjangoProjectRoot();
+    this.loadGitignorePatterns();
+    this.setupFileWatcher();
+  }
+
+  private setupFileWatcher(): void {
+    // Watch for .gitignore and manage.py changes
+    this.fileWatcher = vscode.workspace.createFileSystemWatcher('**/{.gitignore,manage.py}');
+    
+    this.fileWatcher.onDidChange(() => {
+      this.clearCaches();
+      this.refresh();
+    });
+    
+    this.fileWatcher.onDidCreate(() => {
+      this.clearCaches();
+      this.refresh();
+    });
+    
+    this.fileWatcher.onDidDelete(() => {
+      this.clearCaches();
+      this.refresh();
+    });
+  }
+
+  dispose(): void {
+    if (this.fileWatcher) {
+      this.fileWatcher.dispose();
+    }
   }
 
   refresh(): void {
+    this.clearCaches();
     this.projectRoot = this.findDjangoProjectRoot();
+    this.loadGitignorePatterns();
     this._onDidChangeTreeData.fire();
+  }
+
+  private clearCaches(): void {
+    this.configCache = {};
+    this.fileExistsCache.clear();
+    this.directoryListCache.clear();
+    this.compiledGitignorePatterns.clear();
+    this.lastCacheTime = 0;
+  }
+
+  private isCacheValid(): boolean {
+    return Date.now() - this.lastCacheTime < this.cacheTtl;
+  }
+
+  private getCachedConfig<T>(key: string, defaultValue: T): T {
+    if (!this.configCache[key] || !this.isCacheValid()) {
+      const config = vscode.workspace.getConfiguration('djangoStructureExplorer');
+      this.configCache[key] = config.get(key, defaultValue);
+      this.lastCacheTime = Date.now();
+    }
+    return this.configCache[key] as T;
+  }
+
+  private debugLog(message: string, ...args: any[]): void {
+    const enableDebugLogging = this.getCachedConfig('enableDebugLogging', false);
+    if (enableDebugLogging) {
+      console.log(`[Django Structure Explorer] ${message}`, ...args);
+    }
+  }
+
+  private debugWarn(message: string, ...args: any[]): void {
+    const enableDebugLogging = this.getCachedConfig('enableDebugLogging', false);
+    if (enableDebugLogging) {
+      console.warn(`[Django Structure Explorer] ${message}`, ...args);
+    }
   }
 
   getTreeItem(element: DjangoTreeItem): vscode.TreeItem {
@@ -75,9 +148,9 @@ export class DjangoStructureProvider implements vscode.TreeDataProvider<DjangoTr
 
       return items;
     } else if (element.contextValue === 'apps') {
-      // Applications group - show all apps
+      // Applications group - show all apps (optimize with Promise.all)
       const apps = await this.analyzer.findDjangoApps(this.projectRoot);
-      return Promise.all(apps.map(app => {
+      const appItems = apps.map(app => {
         const appName = path.basename(app);
         const appItem = new DjangoTreeItem(
           appName,
@@ -88,7 +161,8 @@ export class DjangoStructureProvider implements vscode.TreeDataProvider<DjangoTr
         );
         appItem.iconPath = new vscode.ThemeIcon('package');
         return appItem;
-      }));
+      });
+      return appItems;
     } else if (element.contextValue === 'app') {
       // Application level - show models, views, etc.
       return this.getAppStructure(element.resourceUri!.fsPath);
@@ -122,14 +196,174 @@ export class DjangoStructureProvider implements vscode.TreeDataProvider<DjangoTr
       return undefined;
     }
 
+    const searchDepth = this.getCachedConfig('searchDepth', 3);
+
     for (const folder of workspaceFolders) {
-      const managePyPath = path.join(folder.uri.fsPath, 'manage.py');
-      if (fs.existsSync(managePyPath)) {
-        return folder.uri.fsPath;
+      const result = this.searchForManagePy(folder.uri.fsPath, searchDepth);
+      if (result) {
+        return result;
       }
     }
 
     return undefined;
+  }
+
+  private cachedFileExists(filePath: string): boolean {
+    if (this.fileExistsCache.has(filePath) && this.isCacheValid()) {
+      return this.fileExistsCache.get(filePath)!;
+    }
+    
+    try {
+      const exists = fs.existsSync(filePath);
+      this.fileExistsCache.set(filePath, exists);
+      return exists;
+    } catch (error) {
+      console.warn(`Failed to check file existence for ${filePath}:`, error);
+      this.fileExistsCache.set(filePath, false);
+      return false;
+    }
+  }
+
+  private cachedReadDir(dirPath: string): string[] | null {
+    if (this.directoryListCache.has(dirPath) && this.isCacheValid()) {
+      return this.directoryListCache.get(dirPath)!;
+    }
+    
+    try {
+      const entries = fs.readdirSync(dirPath, { withFileTypes: true })
+        .filter(entry => entry.isDirectory())
+        .map(entry => entry.name);
+      this.directoryListCache.set(dirPath, entries);
+      return entries;
+    } catch (error) {
+      this.directoryListCache.set(dirPath, []);
+      return null;
+    }
+  }
+
+private searchForManagePy(directory: string, depth: number): string | undefined {
+  if (depth <= 0) {
+    return undefined;
+  }
+
+  // Check for manage.py in current directory (with caching)
+  const managePyPath = path.join(directory, 'manage.py');
+  if (this.cachedFileExists(managePyPath)) {
+    return directory;
+  }
+
+  // If depth > 1, search subdirectories
+  if (depth > 1) {
+    const dirNames = this.cachedReadDir(directory);
+    if (dirNames) {
+      for (const dirName of dirNames) {
+        const subdirPath = path.join(directory, dirName);
+        
+        // Check if directory should be ignored based on .gitignore
+        if (this.isIgnoredByGitignore(subdirPath, dirName)) {
+          continue;
+        }
+
+        const result = this.searchForManagePy(subdirPath, depth - 1);
+        if (result) {
+          return result;
+        }
+      }
+    }
+  }
+
+  return undefined;
+}
+
+  private loadGitignorePatterns(): void {
+    this.gitignorePatterns = [];
+    this.compiledGitignorePatterns.clear();
+    
+    if (!this.projectRoot) {
+      return;
+    }
+
+    const gitignorePath = path.join(this.projectRoot, '.gitignore');
+    if (fs.existsSync(gitignorePath)) {
+      try {
+        const gitignoreContent = fs.readFileSync(gitignorePath, 'utf8');
+        this.gitignorePatterns = gitignoreContent
+          .split('\n')
+          .map(line => line.trim())
+          .filter(line => line && !line.startsWith('#'))
+          .map(pattern => {
+            // Remove trailing slashes and normalize patterns
+            return pattern.replace(/\/$/, '');
+          });
+        
+        // Pre-compile regex patterns for better performance
+        this.gitignorePatterns.forEach(pattern => {
+          if (pattern.includes('*')) {
+            try {
+              const escapedPattern = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+              const regex = new RegExp(`^${escapedPattern}$`, 'i');
+              this.compiledGitignorePatterns.set(pattern, regex);
+            } catch (error) {
+              console.warn(`Failed to compile regex for pattern: ${pattern}`, error);
+            }
+          }
+        });
+        
+        this.debugLog(`Loaded ${this.gitignorePatterns.length} gitignore patterns from ${gitignorePath}`);
+      } catch (error) {
+        this.debugWarn('Failed to read .gitignore:', error);
+      }
+    } else {
+      this.debugLog('No .gitignore file found, using default ignore patterns');
+    }
+
+    // Add basic patterns that should always be ignored for performance
+    this.gitignorePatterns.push('.git', '.vscode', '__pycache__');
+  }
+
+  private isIgnoredByGitignore(dirPath: string, baseName: string): boolean {
+    // Always ignore these for performance (pre-lowercased for efficiency)
+    const baseNameLower = baseName.toLowerCase();
+    const alwaysIgnore = ['.git', '.vscode', '__pycache__'];
+    if (alwaysIgnore.includes(baseNameLower)) {
+      return true;
+    }
+
+    if (this.gitignorePatterns.length === 0) {
+      return false;
+    }
+
+    const relativePath = this.projectRoot ? path.relative(this.projectRoot, dirPath).replace(/\\/g, '/') : baseName;
+    const relativePathLower = relativePath.toLowerCase();
+    
+    return this.gitignorePatterns.some(pattern => {
+      try {
+        // Handle different gitignore pattern types
+        if (pattern.includes('*')) {
+          // Use pre-compiled regex for wildcard patterns
+          const compiledRegex = this.compiledGitignorePatterns.get(pattern);
+          if (compiledRegex) {
+            return compiledRegex.test(baseName) || compiledRegex.test(relativePath);
+          }
+          // Fallback if regex compilation failed
+          return false;
+        } else if (pattern.startsWith('/')) {
+          // Root-relative patterns
+          const rootPattern = pattern.substring(1);
+          return relativePath === rootPattern || relativePath.startsWith(rootPattern + '/');
+        } else {
+          // Simple name matching (optimized with pre-lowercased strings)
+          const patternLower = pattern.toLowerCase();
+          return baseNameLower === patternLower || 
+                 relativePathLower === patternLower || 
+                 relativePathLower.includes('/' + patternLower + '/') ||
+                 relativePathLower.endsWith('/' + patternLower);
+        }
+      } catch (error) {
+        // If anything fails, fall back to simple string matching
+        return baseNameLower.includes(pattern.toLowerCase());
+      }
+    });
   }
 
   private async getProjectStructure(): Promise<DjangoTreeItem[]> {
@@ -165,7 +399,7 @@ export class DjangoStructureProvider implements vscode.TreeDataProvider<DjangoTr
   }
 
   private sortItems(items: DjangoTreeItem[]): DjangoTreeItem[] {
-    const sortOrder = vscode.workspace.getConfiguration('djangoStructureExplorer').get('sortOrder', 'alphabetical');
+    const sortOrder = this.getCachedConfig('sortOrder', 'alphabetical');
     
     if (sortOrder === 'alphabetical') {
       return items.sort((a, b) => a.label.toString().localeCompare(b.label.toString()));
@@ -180,76 +414,32 @@ export class DjangoStructureProvider implements vscode.TreeDataProvider<DjangoTr
     const items: DjangoTreeItem[] = [];
     const appName = path.basename(appPath);
 
-    // Models
-    const modelsPath = path.join(appPath, 'models.py');
-    if (fs.existsSync(modelsPath)) {
-      const modelsItem = new DjangoTreeItem(
-        'Models',
-        vscode.TreeItemCollapsibleState.Collapsed,
-        {
-          command: 'djangoStructureExplorer.openFile',
-          title: 'Open Models',
-          arguments: [modelsPath]
-        },
-        vscode.Uri.file(modelsPath),
-        'models'
-      );
-      modelsItem.iconPath = new vscode.ThemeIcon('database');
-      items.push(modelsItem);
-    }
+    // Define all possible Django app files to check
+    const appFiles = [
+      { name: 'models.py', label: 'Models', contextValue: 'models', icon: 'database' },
+      { name: 'views.py', label: 'Views', contextValue: 'views', icon: 'eye' },
+      { name: 'urls.py', label: 'URLs', contextValue: 'urls', icon: 'link' },
+      { name: 'admin.py', label: 'Admin', contextValue: 'admin', icon: 'shield' }
+    ];
 
-    // Views
-    const viewsPath = path.join(appPath, 'views.py');
-    if (fs.existsSync(viewsPath)) {
-      const viewsItem = new DjangoTreeItem(
-        'Views',
-        vscode.TreeItemCollapsibleState.Collapsed,
-        {
-          command: 'djangoStructureExplorer.openFile',
-          title: 'Open Views',
-          arguments: [viewsPath]
-        },
-        vscode.Uri.file(viewsPath),
-        'views'
-      );
-      viewsItem.iconPath = new vscode.ThemeIcon('eye');
-      items.push(viewsItem);
-    }
-
-    // URLs
-    const urlsPath = path.join(appPath, 'urls.py');
-    if (fs.existsSync(urlsPath)) {
-      const urlsItem = new DjangoTreeItem(
-        'URLs',
-        vscode.TreeItemCollapsibleState.Collapsed,
-        {
-          command: 'djangoStructureExplorer.openFile',
-          title: 'Open URLs',
-          arguments: [urlsPath]
-        },
-        vscode.Uri.file(urlsPath),
-        'urls'
-      );
-      urlsItem.iconPath = new vscode.ThemeIcon('link');
-      items.push(urlsItem);
-    }
-
-    // Admin
-    const adminPath = path.join(appPath, 'admin.py');
-    if (fs.existsSync(adminPath)) {
-      const adminItem = new DjangoTreeItem(
-        'Admin',
-        vscode.TreeItemCollapsibleState.Collapsed,
-        {
-          command: 'djangoStructureExplorer.openFile',
-          title: 'Open Admin',
-          arguments: [adminPath]
-        },
-        vscode.Uri.file(adminPath),
-        'admin'
-      );
-      adminItem.iconPath = new vscode.ThemeIcon('shield');
-      items.push(adminItem);
+    // Use cached file existence checks for better performance
+    for (const file of appFiles) {
+      const filePath = path.join(appPath, file.name);
+      if (this.cachedFileExists(filePath)) {
+        const item = new DjangoTreeItem(
+          file.label,
+          vscode.TreeItemCollapsibleState.Collapsed,
+          {
+            command: 'djangoStructureExplorer.openFile',
+            title: `Open ${file.label}`,
+            arguments: [filePath]
+          },
+          vscode.Uri.file(filePath),
+          file.contextValue
+        );
+        item.iconPath = new vscode.ThemeIcon(file.icon);
+        items.push(item);
+      }
     }
 
     return items;
@@ -257,12 +447,12 @@ export class DjangoStructureProvider implements vscode.TreeDataProvider<DjangoTr
 
   private async getModels(modelsPath: string): Promise<DjangoTreeItem[]> {
     const models = await this.analyzer.extractModels(modelsPath);
-    console.log('Models found:', models.length);
+    this.debugLog('Models found:', models.length);
     
     const items = models.map(model => {
-      console.log(`Model: ${model.name}, Fields: ${model.fields?.length || 0}`);
-      if (model.fields) {
-        console.log('Model fields:', JSON.stringify(model.fields));
+      this.debugLog(`Model: ${model.name}, Fields: ${model.fields?.length || 0}`);
+      if (model.fields && this.getCachedConfig('enableDebugLogging', false)) {
+        this.debugLog('Model fields:', JSON.stringify(model.fields));
       }
       
       // Create a copy of fields to avoid reference issues
